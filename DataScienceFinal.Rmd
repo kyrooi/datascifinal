@@ -1,0 +1,199 @@
+---
+title: "Final Project for Data Science With R"
+output: html_notebook
+---
+
+The purpose of this project is to predict the severity of lung cancer based on categorical measurements from 1-10. These classifications were made by doctors, and the data comes from 1000 patients already admitted for lung cancer.
+
+Before we begin, we must determine the algorithm that we plan to use. Since the severity of lung cancer is measured in three categories: low, medium, and high, the k-nearest-neighbors algorithm would be a suitable classification algorithm here.
+
+We first import the dataset and load libraries:
+
+```{r}
+setwd("/Users/kairuisun/Desktop/datasci")
+install.packages("ISLR2")
+install.packages("dplyr")
+install.packages("ggplot2")
+install.packages("ggpubr")
+install.packages("class")
+install.packages("scrime")
+install.packages("caret")
+install.packages("boot")
+install.packages("purrr")  
+
+library(ISLR2)
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+library(class)
+library(scrime)
+library(caret)
+library(boot)
+library(tidyr)
+library(purrr)
+
+df <- read.csv("lungdata.csv")
+summary(df)
+
+```
+
+The index and patient id are of no use to us, since they do not impact the measured severity of lung cancer.
+
+```{r}
+df <- df[,-c(1,2)]
+```
+
+We now begin to clean our data by calculating outliers using the IQR method.
+
+```{r}
+remove_outliers <- function(df) {
+  outliers <- apply(df[c(1:23)], 2, function(x) {
+    Q1 <- quantile(x, 0.25)
+    Q3 <- quantile(x, 0.75)
+    IQR <- Q3 - Q1
+    lower_bound <- Q1 - 1.5 * IQR
+    upper_bound <- Q3 + 1.5 * IQR
+    x < lower_bound | x > upper_bound
+  })
+  rows_with_outliers <- apply(outliers, 1, any)
+  return(df[!rows_with_outliers, ])
+}
+
+# Remove rows containing outliers for each column in the dataframe
+df <- remove_outliers(df)
+
+```
+
+It appears that the age 73 was an outlier.
+
+We then normalize the data to be a scale between 1 and 10. Some measurement such as age have a wide range, and the other columns have ranges from 1-7, 1-8, or 1-9. Let's visualize this:
+
+```{r}
+histograms_list <- map(names(df[c(1:23)]), ~ ggplot(df, aes(x = .data[[.x]])) +
+                                    geom_histogram() +
+                                    labs(title = paste("Distribution of", .x),
+                                         x = "Values",
+                                         y = "Frequency"))
+walk(histograms_list, print)
+```
+
+Since KNN measures the distance between points, if one predictor has a larger scale than the others, that predictor will dominate the classification. The weight for each predictor is currently 1.
+
+```{r}
+
+min_vals <- apply(df, 2, min)
+max_vals <- apply(df, 2, max)
+
+df_norm <- data.frame(scale(df[c(1:23)]))
+
+min_scale <- 1
+max_scale <- 10
+
+for (col in 1:ncol(df_norm)) {
+  df_norm[, col] <- ((df_norm[, col] - min(df_norm[, col])) /
+                          (max(df_norm[, col]) - min(df_norm[, col]))) *
+                          (max_scale - min_scale) + min_scale
+}
+
+```
+
+We now need to re-add the severity of cancer column to the data, since it has now been normalized.
+
+```{r}
+df_norm$Cancer.Severity = df$Cancer.Severity
+df_norm$Cancer.Severity = ifelse(df_norm$Cancer.Severity == 'Low', 1, 
+                                 ifelse(df_norm$Cancer.Severity == 'Medium', 2, 3))
+
+```
+
+Let's take another look at the data now:
+
+```{r}
+histograms_list <- map(names(df_norm), ~ ggplot(df_norm, aes(x = .data[[.x]])) +
+                                    geom_histogram() +
+                                    labs(title = paste("Distribution of", .x),
+                                         x = "Values",
+                                         y = "Frequency"))
+walk(histograms_list, print)
+```
+
+Since we distributed the data between 1 and 10, the gender column ends up being 1 for males and 10 for females. This might be adversely affecting our results, so let's scale this down.
+
+```{r}
+for (row in 1:nrow(df_norm))
+{
+  df_norm[row,2] <- ifelse(df_norm[row,2] == 10, 2, 1)
+}
+```
+
+We now split the data into training and testing sets. We can start with a 50-50 split of training to testing data.
+
+```{r}
+set.seed(123)
+sample <- sample(c(TRUE, FALSE), nrow(df_norm), replace=TRUE, prob=c(0.5,0.5))
+train_x  <- df_norm[sample, c(1:23)]
+train_y <- df_norm[sample, 24]
+test_x   <- df_norm[!sample, c(1:23)]
+test_y <- df_norm[!sample, 24]
+```
+
+Let's see how KNN does to classify the data, choosing an arbitrary k-value of 3.
+
+```{r}
+model <- knn(train_x,test_x,train_y,k=3)
+tab <- table(model,test_y)
+print(tab)
+```
+Here, our model predicted a severity of low when it was actually high 8 times. This is giving a false negative, which should be penalized as the patient may have false hope about their cancer situation. Below is the performance of the model:
+
+Precision: 1.0000
+Sensitivity: 0.9841
+False negative rate: 0.0159
+Accuracy: 0.9841
+F1: 0.9920
+
+
+Let's see what the best k-value is. To do this, we will use the elbow method of plotting different k-values versus the validation error, which is the error between the predicted outcomes and the test data's outcomes.
+
+```{r}
+k_values <- 1:300
+validation_errors <- vector("numeric", length = length(k_values))
+
+for (j in seq_along(k_values)) {
+  k <- k_values[j]
+  knn_model2 <- knn(train_x, test_x, train_y, k = k)
+  validation_errors[j] <- mean(knn_model2 != test_y)
+}
+```
+
+Let's plot the graph now.
+
+```{r}
+
+plot(k_values, validation_errors, type = "b", pch = 16, col = "red",
+     xlab = "K-value", ylab = "Validation Error", main = "K-value vs. Validation Error")
+```
+
+The results for the graph are pretty sketchy, but this might be due to our very small sample size of 1000. If my model was trained on more data from a wider sample of patients, the ideal K would probably be the local minimum between 0 and 50 at roughly 40. Out of curiosity, let's rerun the previous KNN with our new K.
+
+```{r}
+sample <- sample(c(TRUE, FALSE), nrow(df_norm), replace=TRUE, prob=c(0.5,0.5))
+train_x  <- df_norm[sample, c(1:23)]
+train_y <- df_norm[sample, 24]
+test_x   <- df_norm[!sample, c(1:23)]
+test_y <- df_norm[!sample, 24]
+model <- knn(train_x,test_x,train_y,k=20) #changed here
+tab <- table(model,test_y)
+print(tab)
+```
+
+We are looking at a much more reasonable model.
+
+Sensitivity: 0.9959
+Precision: 0.9524
+False Discovery: 0.0476
+False Negative: 0.0041 (this is lower than the first trial!)
+Accuracy: 0.9486
+F1: 0.9736
+
+If I were to find another dataset online from a totally different source with similar predictors, I would run my model on that dataset with varying ks, starting at k=40. Due to time constraints, I was unable to find such a dataset before the presentation, but that is always a possibility in the future.
